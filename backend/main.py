@@ -50,8 +50,21 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title=settings.app_name, lifespan=lifespan)
+app = FastAPI(
+    title=settings.app_name,
+    lifespan=lifespan,
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json",
+)
 
+@app.get("/")
+def root():
+    return {"status": "ok", "service": "ai-patient-backend"}
+
+@app.get("/health")
+def health():
+    return {"status": "healthy"}
 
 def build_error_response(
     error: str,
