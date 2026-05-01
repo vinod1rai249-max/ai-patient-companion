@@ -13,7 +13,7 @@ from pandas.io.formats.style import Styler
 
 st.set_page_config(
     page_title="AI Companion for Patients",
-    page_icon="Health",
+    page_icon="🩺",
     layout="wide",
 )
 
@@ -36,6 +36,13 @@ PATIENT_PROFILES = {
     },
 }
 
+PATIENT_ID_MAP = {
+    "demo-patient-001": "patient-001",
+    "demo-patient-002": "patient-002",
+    "demo-patient-003": "patient-003",
+}
+
+
 EXAMPLE_QUESTIONS = [
     "Explain my HbA1c trend",
     "What does LDL mean?",
@@ -43,7 +50,10 @@ EXAMPLE_QUESTIONS = [
     "Do I have diabetes? safety test",
 ]
 
-DEFAULT_API_URL = os.getenv("API_URL", "http://127.0.0.1:8000")
+DEFAULT_API_URL = os.getenv(
+    "API_URL",
+    "https://ai-patient-backend-1051385917818.asia-south1.run.app",
+)
 
 
 def initialize_state() -> None:
@@ -85,34 +95,42 @@ def sidebar_controls() -> tuple[str, str]:
 
 
 def call_chat_api(api_url: str, patient_id: str, message: str) -> dict[str, Any]:
-    payload = {"patient_id": patient_id, "message": message}
+    backend_patient_id = PATIENT_ID_MAP.get(patient_id, patient_id)
+
+    payload = {
+        "patient_id": backend_patient_id,
+        "message": message,
+        "user_id": "demo-user",
+    }
+
     try:
         with httpx.Client(timeout=30.0) as client:
             response = client.post(f"{api_url.rstrip('/')}/chat", json=payload)
             response.raise_for_status()
-            return {"ok": True, "data": response.json()}
+
+            data = response.json()
+            data["display_patient_id"] = patient_id
+            data["backend_patient_id"] = backend_patient_id
+
+            return {"ok": True, "data": data}
+
     except httpx.ConnectError:
-        return {
-            "ok": False,
-            "error": "The backend could not be reached. Start FastAPI first, then try again.",
-        }
+        return {"ok": False, "error": "Backend not reachable"}
+
     except httpx.HTTPStatusError as exc:
         try:
             detail = exc.response.json()
         except ValueError:
             detail = {"message": exc.response.text}
+
         return {
             "ok": False,
-            "error": f"API returned {exc.response.status_code}.",
+            "error": f"API error: {exc.response.status_code}",
             "details": detail,
         }
-    except httpx.TimeoutException:
-        return {
-            "ok": False,
-            "error": "The request timed out after 30 seconds. Please retry.",
-        }
-    except Exception as exc:  # pragma: no cover
-        return {"ok": False, "error": f"Unexpected UI error: {exc}"}
+
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
 
 
 def build_error_response(error_message: str, details: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -223,18 +241,24 @@ def style_abnormal_results_dataframe(dataframe: pd.DataFrame) -> Styler:
 
 def render_patient_report(response: dict[str, Any]) -> None:
     abnormal_results = response.get("abnormal_results", [])
-    patient_id = response.get("patient_id", "Unknown")
+
+    display_patient_id = response.get("display_patient_id") or response.get("patient_id", "Unknown")
+    backend_patient_id = response.get("backend_patient_id") or response.get("patient_id", "Unknown")
+
     patient_context = response.get("patient_context", {})
-    sidebar_profile = PATIENT_PROFILES.get(patient_id, {})
+    sidebar_profile = PATIENT_PROFILES.get(display_patient_id, {})
+
     age = patient_context.get("age") or sidebar_profile.get("age", "N/A")
     sex = patient_context.get("sex") or sidebar_profile.get("sex", "N/A")
 
     top_cols = st.columns(5)
-    top_cols[0].metric("Patient ID", patient_id)
+    top_cols[0].metric("Patient ID", display_patient_id)
     top_cols[1].metric("Age / Sex", f"{age} / {str(sex).title()}")
     top_cols[2].metric("Out-of-Range Results", int(response.get("abnormal_count", 0)))
     top_cols[3].metric("Critical Count", int(response.get("critical_count", 0)))
     top_cols[4].metric("Scope", "Latest completed")
+
+    st.caption(f"Backend Patient ID: {backend_patient_id}")
 
     if abnormal_results:
         dataframe = build_abnormal_results_dataframe(abnormal_results)
@@ -318,10 +342,9 @@ def render_response_sections(response: dict[str, Any]) -> None:
         )
         if doctor_questions:
             for index, question in enumerate(doctor_questions):
-                checked = index == 0
                 st.checkbox(
                     f"Discuss: {question}",
-                    value=checked,
+                    value=index == 0,
                     key=f"question-{response.get('session_id', 'no-session')}-{index}",
                 )
         else:
@@ -386,6 +409,7 @@ def render_blocked_response(response: dict[str, Any]) -> None:
 def render_latest_response() -> None:
     latest_response = st.session_state.latest_response
     selected_question = st.session_state.selected_question
+
     if not latest_response:
         return
 
@@ -399,6 +423,7 @@ def render_latest_response() -> None:
         st.success("Latest response ready")
 
     st.write(latest_response.get("reply", ""))
+
     if latest_response.get("safety_status") == "FLAGGED":
         render_blocked_response(latest_response)
     else:
